@@ -1,15 +1,17 @@
 "use client";
-/* eslint-disable react-hooks/refs, react-hooks/set-state-in-effect -- dnd-kit exposes callback refs; local storage hydrates after mount. */
+/* eslint-disable react-hooks/refs, react-hooks/set-state-in-effect -- dnd-kit exposes callback refs; auth and realtime hydrate after mount. */
 
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
 import { DndContext, DragEndEvent, DragOverlay, DragOverEvent, KeyboardSensor, PointerSensor, closestCorners, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDown, ArrowUp, BarChart3, Check, CornerDownLeft, Settings as Gear, GripVertical, MessageSquare, Paperclip, Plus, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BarChart3, Check, CornerDownLeft, Settings as Gear, GripVertical, LogOut, MessageSquare, Paperclip, Plus, RotateCcw, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { analyzeProject, ProjectNudge } from "@/lib/project-analysis";
+import { getSupabaseClient } from "@/lib/supabase";
 
 type Priority = "urgent" | "normal" | "low";
 type Phase = { id: string; name: string };
@@ -17,23 +19,11 @@ type HistoryEntry = { id: string; type: "auto" | "comment"; message: string; tim
 type Feature = { id: string; title: string; description: string; phaseId: string; assignee: string; priority: Priority; createdAt: string; updatedAt: string; history: HistoryEntry[] };
 type ProjectState = { project: { name: string; description: string; createdAt: string }; phases: Phase[]; features: Feature[] };
 
-const STORAGE_KEY = "recovery-project-board-v1";
 const priorities: Array<{ id: Priority; label: string }> = [{ id: "urgent", label: "Urgent" }, { id: "normal", label: "Normal" }, { id: "low", label: "Low" }];
-const isoDaysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
-const entry = (message: string, days = 0, type: "auto" | "comment" = "auto"): HistoryEntry => ({ id: `${message}-${days}`, type, message, timestamp: isoDaysAgo(days) });
-
-const seedState: ProjectState = {
-  project: { name: "Data Recovery & Reconstruction Platform", description: "A deterministic, provenance-first recovery engine for damaged files.", createdAt: isoDaysAgo(28) },
+const emptyState: ProjectState = {
+  project: { name: "Private Project Board", description: "Sign in to load the shared project workspace.", createdAt: new Date(0).toISOString() },
   phases: [{ id: "backlog", name: "Backlog" }, { id: "progress", name: "In Progress" }, { id: "review", name: "Review" }, { id: "done", name: "Done" }],
-  features: [
-    { id: "research", title: "Architecture research — 16 topics", description: "Complete research program covering the recovery core, formats, candidate generation, validation, provenance, security, and delivery roadmap.", phaseId: "done", assignee: "Nitiraj", priority: "urgent", createdAt: isoDaysAgo(24), updatedAt: isoDaysAgo(2), history: [entry("Created in Backlog", 24), entry("Moved from Backlog to Done", 2)] },
-    { id: "stack", title: "Technology stack decision", description: "Lock Rust, Tokio, Tonic, PostgreSQL, content-addressed artifacts, Python research tooling, and GitHub Actions.", phaseId: "done", assignee: "Nitiraj", priority: "normal", createdAt: isoDaysAgo(2), updatedAt: isoDaysAgo(1), history: [entry("Created in Review", 2), entry("Moved from Review to Done", 1)] },
-    { id: "foundation", title: "Repository & workspace scaffold", description: "Create the Rust Cargo workspace, core crate boundaries, CI checks, database environment, and contribution rules.", phaseId: "progress", assignee: "Nitiraj", priority: "urgent", createdAt: isoDaysAgo(7), updatedAt: isoDaysAgo(6), history: [entry("Created in Backlog", 7), entry("Moved from Backlog to In Progress", 6)] },
-    { id: "git-onboarding", title: "Git onboarding & team workflow", description: "Practice branch, commit, push, pull request, review, merge, and safe synchronization as a two-developer team.", phaseId: "progress", assignee: "Sister", priority: "normal", createdAt: isoDaysAgo(1), updatedAt: isoDaysAgo(1), history: [entry("Created in In Progress", 1)] },
-    { id: "protocol", title: "Plugin protocol v1", description: "Define versioned protobuf contracts for discovery, candidate generation, reconstruction, validation, budgets, and provenance.", phaseId: "backlog", assignee: "Nitiraj", priority: "urgent", createdAt: isoDaysAgo(1), updatedAt: isoDaysAgo(1), history: [entry("Created in Backlog", 1)] },
-    { id: "png-slice", title: "PNG recovery vertical slice", description: "First complete recovery flow: scan, parse, diagnose, generate bounded candidates, rebuild, validate, and export provenance.", phaseId: "backlog", assignee: "Sister", priority: "normal", createdAt: isoDaysAgo(1), updatedAt: isoDaysAgo(1), history: [entry("Created in Backlog", 1)] },
-    { id: "formats", title: "JPEG, ZIP & PDF plugins", description: "Extend the validated recovery pipeline to the remaining MVP formats after the PNG reference slice is stable.", phaseId: "backlog", assignee: "Unassigned", priority: "low", createdAt: isoDaysAgo(1), updatedAt: isoDaysAgo(1), history: [entry("Created in Backlog", 1)] },
-  ],
+  features: [],
 };
 
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -72,9 +62,36 @@ function PhaseColumn({ phase, features, children }: { phase: Phase; features: Fe
   return <section className={`phase-zone ${isOver ? "is-over" : ""}`}><div className="phase-label"><span>{phase.name}</span><b>{features.length}</b></div><SortableContext items={features.map((feature) => feature.id)} strategy={verticalListSortingStrategy}><div ref={setNodeRef} className="note-stack">{children}<div className="drop-hint">DROP NOTE HERE</div></div></SortableContext></section>;
 }
 
+function LoginGate({ configured, loading, error, onSubmit }: { configured: boolean; loading: boolean; error: string; onSubmit: (email: string, password: string) => Promise<void> }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const submit = async (event: FormEvent) => { event.preventDefault(); await onSubmit(email, password); };
+
+  return <main className="auth-shell"><section className="auth-card">
+    <div className="auth-pin" /><span className="project-kicker">PRIVATE / BOARD</span>
+    <ShieldCheck className="auth-shield" /><h1>Authorized team only</h1>
+    <p>The project and its tasks stay hidden until one of the two approved accounts signs in.</p>
+    {!configured ? <div className="auth-error">Supabase is not configured. Add the two NEXT_PUBLIC_SUPABASE secrets in GitHub, then redeploy.</div> :
+      <form className="auth-form" onSubmit={submit}>
+        <label>Email<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+        <label>Password<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {error && <div className="auth-error" role="alert">{error}</div>}
+        <button className="board-button full" disabled={loading}>{loading ? "Checking…" : "Open board"}</button>
+      </form>}
+    <small>No sign-up is available here. Access is controlled by the database allowlist.</small>
+  </section></main>;
+}
+
 export default function Home() {
-  const [state, setState] = useState<ProjectState>(seedState);
-  const [ready, setReady] = useState(false);
+  const supabase = useMemo(() => getSupabaseClient(), []);
+  const [state, setState] = useState<ProjectState>(emptyState);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [boardStatus, setBoardStatus] = useState<"idle" | "loading" | "ready" | "unauthorized" | "unseeded" | "error">("idle");
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
+  const lastSerialized = useRef("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [featureModal, setFeatureModal] = useState(false);
   const [settingsModal, setSettingsModal] = useState(false);
@@ -86,8 +103,66 @@ export default function Home() {
   const [newFeature, setNewFeature] = useState({ title: "", description: "", assignee: "", priority: "normal" as Priority, phaseId: "backlog" });
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 7 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
-  useEffect(() => { try { const stored = localStorage.getItem(STORAGE_KEY); if (stored) setState(JSON.parse(stored)); } catch {} setReady(true); }, []);
-  useEffect(() => { if (ready) localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }, [state, ready]);
+  useEffect(() => {
+    if (!supabase) { setAuthReady(true); return; }
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => { if (active) { setSession(data.session); setAuthReady(true); } });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => { setSession(nextSession); setAuthReady(true); });
+    return () => { active = false; listener.subscription.unsubscribe(); };
+  }, [supabase]);
+
+  useEffect(() => {
+    if (!supabase || !session) { setBoardStatus("idle"); return; }
+    let active = true;
+    setBoardStatus("loading");
+    const loadBoard = async () => {
+      const { data: allowed, error: accessError } = await supabase.rpc("is_board_editor");
+      if (!active) return;
+      if (accessError) { setAuthError(accessError.message); setBoardStatus("error"); return; }
+      if (!allowed) { setBoardStatus("unauthorized"); return; }
+      const { data, error } = await supabase.from("project_boards").select("state").eq("id", "main").maybeSingle();
+      if (!active) return;
+      if (error) { setAuthError(error.message); setBoardStatus("error"); return; }
+      if (!data) { setBoardStatus("unseeded"); return; }
+      const nextState = data.state as ProjectState;
+      lastSerialized.current = JSON.stringify(nextState);
+      setState(nextState);
+      setBoardStatus("ready");
+    };
+    void loadBoard();
+    const channel = supabase.channel("private-project-board").on("postgres_changes", { event: "UPDATE", schema: "public", table: "project_boards", filter: "id=eq.main" }, (payload) => {
+      const nextState = (payload.new as { state?: ProjectState }).state;
+      if (!nextState) return;
+      const serialized = JSON.stringify(nextState);
+      if (serialized === lastSerialized.current) return;
+      lastSerialized.current = serialized;
+      setState(nextState);
+      setSaveStatus("saved");
+    }).subscribe();
+    return () => { active = false; void supabase.removeChannel(channel); };
+  }, [session, supabase]);
+
+  useEffect(() => {
+    if (!supabase || !session || boardStatus !== "ready") return;
+    const serialized = JSON.stringify(state);
+    if (serialized === lastSerialized.current) return;
+    setSaveStatus("saving");
+    const timeout = window.setTimeout(async () => {
+      const { error } = await supabase.from("project_boards").update({ state, updated_at: new Date().toISOString(), updated_by: session.user.id }).eq("id", "main");
+      if (error) { setSaveStatus("error"); return; }
+      lastSerialized.current = serialized;
+      setSaveStatus("saved");
+    }, 550);
+    return () => window.clearTimeout(timeout);
+  }, [boardStatus, session, state, supabase]);
+
+  const signIn = async (email: string, password: string) => {
+    if (!supabase) return;
+    setAuthBusy(true); setAuthError("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setAuthError(error.message);
+    setAuthBusy(false);
+  };
 
   const activeFeature = state.features.find((feature) => feature.id === activeId);
   const selected = state.features.find((feature) => feature.id === selectedId);
@@ -117,10 +192,13 @@ export default function Home() {
   const phaseCounts = useMemo(() => state.phases.map((phase) => ({ ...phase, count: state.features.filter((feature) => feature.phaseId === phase.id).length })), [state]);
   const outstanding = state.features.filter((feature) => feature.phaseId !== finalPhase?.id);
   const workloads = [...outstanding.reduce((map, feature) => { map.set(feature.assignee, (map.get(feature.assignee) ?? 0) + 1); return map; }, new Map<string, number>()).entries()].sort((a, b) => b[1] - a[1]);
-  if (!ready) return <main className="loading-board">Pinning the board…</main>;
+  if (!authReady) return <main className="loading-board">Checking the lock…</main>;
+  if (!session) return <LoginGate configured={Boolean(supabase)} loading={authBusy} error={authError} onSubmit={signIn} />;
+  if (boardStatus === "loading" || boardStatus === "idle") return <main className="loading-board">Loading the private board…</main>;
+  if (boardStatus !== "ready") return <main className="auth-shell"><section className="auth-card"><ShieldCheck className="auth-shield" /><h1>{boardStatus === "unauthorized" ? "Account not authorized" : boardStatus === "unseeded" ? "Board setup incomplete" : "Could not load board"}</h1><p>{boardStatus === "unauthorized" ? "This login is valid, but it is not one of the two users on the board allowlist." : boardStatus === "unseeded" ? "Run the private roadmap seed SQL in Supabase, then refresh this page." : authError || "Check the Supabase configuration and try again."}</p><button className="board-button full" onClick={() => supabase?.auth.signOut()}><LogOut /> Sign out</button></section></main>;
 
   return <main className="app-shell">
-    <header className="wood-header"><div className="brand-block"><span className="project-kicker">PROJECT / BOARD</span><h1>{state.project.name}</h1><p>{state.project.description}</p></div><div className="header-actions"><div className="completion-ticket"><strong>{completion}%</strong><span>COMPLETE</span></div><button className="board-button light" onClick={() => setFeatureModal(true)}><Plus /> Add feature</button><button className="board-button" onClick={() => setSummaryModal(true)}><BarChart3 /> Status</button><button className="metal-button" onClick={() => setSettingsModal(true)} aria-label="Board settings"><Gear /></button></div></header>
+    <header className="wood-header"><div className="brand-block"><span className="project-kicker">PROJECT / BOARD</span><h1>{state.project.name}</h1><p>{state.project.description}</p></div><div className="header-actions"><div className={`sync-ticket sync-${saveStatus}`}><span>{saveStatus === "saving" ? "SYNCING" : saveStatus === "error" ? "SYNC ERROR" : "SAVED"}</span><small>{session.user.email}</small></div><div className="completion-ticket"><strong>{completion}%</strong><span>COMPLETE</span></div><button className="board-button light" onClick={() => setFeatureModal(true)}><Plus /> Add feature</button><button className="board-button" onClick={() => setSummaryModal(true)}><BarChart3 /> Status</button><button className="metal-button" onClick={() => setSettingsModal(true)} aria-label="Board settings"><Gear /></button><button className="metal-button logout-button" onClick={() => supabase?.auth.signOut()} aria-label="Sign out"><LogOut /></button></div></header>
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={(event) => setActiveId(String(event.active.id))} onDragOver={moveFeature} onDragEnd={handleDragEnd} onDragCancel={() => setActiveId(null)}>
       <div className="corkboard"><div className="board-summary-strip"><span>{state.features.length} FEATURES</span><i /><span>{completed} SHIPPED</span><i /><span>{outstanding.filter((feature) => feature.priority === "urgent").length} URGENT OPEN</span></div><div className="phases-grid" style={{ gridTemplateColumns: `repeat(${state.phases.length}, minmax(280px, 1fr))` }}>{state.phases.map((phase) => { const features = state.features.filter((feature) => feature.phaseId === phase.id); return <PhaseColumn key={phase.id} phase={phase} features={features}>{features.map((feature) => <StickyNote key={feature.id} feature={feature} phaseName={phase.name} onOpen={() => setSelectedId(feature.id)} onPriority={(priority) => changePriority(feature.id, priority)} onComment={(comment) => addComment(feature.id, comment)} />)}</PhaseColumn>; })}</div></div>
       <DragOverlay>{activeFeature ? <StickyNote feature={activeFeature} phaseName={state.phases.find((phase) => phase.id === activeFeature.phaseId)?.name ?? ""} onOpen={() => {}} onPriority={() => {}} onComment={() => {}} overlay /> : null}</DragOverlay>

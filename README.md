@@ -1,4 +1,16 @@
-# vinext-starter
+# Project Board
+
+## Private two-user GitHub Pages setup
+
+1. Create exactly two users in Supabase Authentication, then disable new-user sign-ups in Authentication settings.
+2. Open `supabase/setup.sql`, paste it into Supabase SQL Editor, replace `YOUR_EMAIL` and `SISTER_EMAIL` there, and run it. Do not commit the real emails.
+3. Run the separately supplied `datar-tracker-private-roadmap-seed.sql` in Supabase SQL Editor. It contains the real project roadmap and is intentionally excluded from this public repository.
+4. In GitHub, open **Settings → Secrets and variables → Actions** and add repository secrets named `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+5. Push to `main`. The Pages workflow builds the auth-gated static app and injects the browser-safe publishable settings.
+
+Never add the Supabase secret/service-role key to GitHub or browser code. Row-level security grants board access only to the two UUIDs in `board_editors`; every board edit is stored in Supabase and streamed to the other signed-in user.
+
+## Starter details
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
